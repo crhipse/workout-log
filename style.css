@@ -137,7 +137,23 @@ body {
   flex-direction: column;
   gap: 14px;
 }
-.section-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.pr-chip { margin-left: auto; color: var(--warm); font-size: 12px; font-weight: 700; }
+.ex-memo {
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--card2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
 
 .hist-line { display: flex; gap: 10px; font-size: 14px; padding: 3px 0; }
 .hist-date { color: var(--muted); flex: 0 0 68px; }

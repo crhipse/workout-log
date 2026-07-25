@@ -137,6 +137,21 @@ function prevSessions(exId, beforeDate, n) {
   return sessionsFor(exId).filter(sess => sess.date < beforeDate).slice(0, n);
 }
 
+/* 개인 최고기록 — 본세트 중 최고 무게(같으면 최다 횟수), 맨몸 운동은 최다 횟수 */
+function prFor(exId) {
+  let best = null;
+  let bestBw = null;
+  for (const s of db.sets) {
+    if (s.exId !== exId || s.warmup) continue;
+    if (s.kg === 0) {
+      if (!bestBw || s.reps > bestBw.reps) bestBw = s;
+    } else if (!best || s.kg > best.kg || (s.kg === best.kg && s.reps > best.reps)) {
+      best = s;
+    }
+  }
+  return best || bestBw;
+}
+
 function prefillDisplay(ex) {
   const today = setsOn(ex.id, state.date);
   let src = today.length ? today[today.length - 1] : null;
@@ -438,9 +453,18 @@ function exerciseCard(ex, label) {
 function loggerPanel(ex) {
   const panel = el('div', 'panel');
 
-  // 지난 기록 (최근 3회)
+  // 지난 기록 (최근 3회) + 최고 기록
   const histBox = el('div', 'history');
-  histBox.appendChild(el('div', 'section-title', `지난 기록 (${ex.unit})`));
+  const titleRow = el('div', 'section-title');
+  titleRow.appendChild(el('span', null, `지난 기록 (${ex.unit})`));
+  const pr = prFor(ex.id);
+  if (pr) {
+    const label = pr.kg === 0
+      ? `맨몸×${pr.reps}`
+      : `${fmtNum(toDisplay(pr.kg, ex.unit))}${ex.unit}×${pr.reps}`;
+    titleRow.appendChild(el('span', 'pr-chip', `🏆 최고 ${label}`));
+  }
+  histBox.appendChild(titleRow);
   const hist = prevSessions(ex.id, state.date, 3);
   if (hist.length) {
     for (const sess of hist) {
@@ -455,6 +479,9 @@ function loggerPanel(ex) {
     histBox.appendChild(el('div', 'hist-line muted', '지난 기록이 없습니다'));
   }
   panel.appendChild(histBox);
+
+  // 기계 세팅 메모
+  if (ex.memo) panel.appendChild(el('div', 'ex-memo', `📝 ${ex.memo}`));
 
   // 무게·횟수 입력
   const pre = prefillDisplay(ex);
@@ -714,6 +741,7 @@ function openExDialog(ex = null) {
 
   document.getElementById('exName').value = ex ? ex.baseName : '';
   document.getElementById('exVariant').value = ex ? ex.variant : '';
+  document.getElementById('exMemo').value = ex ? (ex.memo || '') : '';
   setDlgUnit(ex ? ex.unit : 'kg');
 
   const dl = document.getElementById('baseNameList');
@@ -753,14 +781,15 @@ function init() {
     e.preventDefault();
     const name = document.getElementById('exName').value.trim();
     const variant = document.getElementById('exVariant').value.trim();
+    const memo = document.getElementById('exMemo').value.trim();
     const bodyPart = document.getElementById('exBodyPart').value;
     if (!name) return;
 
     if (editingId) {
       const ex = exById(editingId);
-      if (ex) Object.assign(ex, { baseName: name, variant, bodyPart, unit: dlgUnit });
+      if (ex) Object.assign(ex, { baseName: name, variant, memo, bodyPart, unit: dlgUnit });
     } else {
-      const ex = { id: uid(), baseName: name, variant, bodyPart, unit: dlgUnit };
+      const ex = { id: uid(), baseName: name, variant, memo, bodyPart, unit: dlgUnit };
       db.exercises.push(ex);
       state.bodyPart = bodyPart;
       db.ui.lastTab = bodyPart;
