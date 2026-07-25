@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>운동 기록</title>
+  <meta name="theme-color" content="#0e1013">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topwrap">
+    <div class="topbar">
+      <h1>운동 기록</h1>
+      <input type="date" id="datePicker" class="date-picker">
+      <button id="settingsBtn" class="icon-btn" aria-label="설정">⚙️</button>
+    </div>
+    <nav id="tabs" class="tabs"></nav>
+  </header>
+
+  <main id="list" class="list"></main>
+
+  <button id="addExBtn" class="fab">＋ 종목 추가</button>
+
+  <nav class="bottomnav">
+    <button id="navLog" class="active">✏️ 기록</button>
+    <button id="navDay">📋 일지</button>
+    <button id="navStats">📊 통계</button>
+  </nav>
+
+  <dialog id="exDialog">
+    <form id="exForm">
+      <h2 id="exDialogTitle">종목 추가</h2>
+      <label>부위
+        <select id="exBodyPart"></select>
+      </label>
+      <label>운동 이름
+        <input type="text" id="exName" list="baseNameList" required autocomplete="off" placeholder="예: 체스트 프레스">
+        <datalist id="baseNameList"></datalist>
+      </label>
+      <label>구분 — 제조사·기구 (선택)
+        <input type="text" id="exVariant" autocomplete="off" placeholder="예: 해머, 사이벡스">
+      </label>
+      <label>무게 단위</label>
+      <div class="seg" id="exUnitSeg">
+        <button type="button" data-unit="kg" class="active">kg</button>
+        <button type="button" data-unit="lb">lb</button>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="exCancelBtn">취소</button>
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <h2>설정</h2>
+    <div class="settings-list">
+      <button id="exportBtn">📊 엑셀 내보내기 (.xlsx)</button>
+      <button id="backupBtn">💾 데이터 백업 (.json 저장)</button>
+      <button id="restoreBtn">📂 백업 불러오기</button>
+      <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+      <button id="wipeBtn" class="danger">🗑 전체 데이터 초기화</button>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" id="settingsCloseBtn">닫기</button>
+    </div>
+  </dialog>
+
+  <script src="xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
