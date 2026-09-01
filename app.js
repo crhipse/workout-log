@@ -6,6 +6,7 @@ const BODY_PARTS = ['가슴', '등', '하체', '어깨', '이두', '삼두', '�
 const KG_PER_LB = 0.45359237;
 const WEIGHT_STEP = { kg: 2.5, lb: 5 };
 const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
+const REST_STALE_MS = 20 * 60 * 1000; // 20분 넘으면 휴식으로 안 침
 
 /* ===== 유틸 ===== */
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -37,6 +38,10 @@ function weekStart(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return dateToStr(d);
+}
+
+function fmtRest(sec) {
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 }
 
 function round1(v) { return Math.round(v * 10) / 10; }
@@ -81,12 +86,13 @@ function load() {
     if (raw) {
       db = JSON.parse(raw);
       db.ui = db.ui || {};
+      if (db.ui.autoTimer === undefined) db.ui.autoTimer = true;
       db.exercises = db.exercises || [];
       db.sets = db.sets || [];
       return;
     }
   } catch (e) { /* 손상된 데이터면 초기화 */ }
-  db = { version: 1, exercises: seedExercises(), sets: [], ui: {} };
+  db = { version: 1, exercises: seedExercises(), sets: [], ui: { autoTimer: true } };
   save();
 }
 
@@ -168,19 +174,53 @@ function prefillDisplay(ex) {
 
 function fmtSet(s, unit) {
   const core = s.kg === 0 ? `맨몸×${s.reps}` : `${fmtNum(toDisplay(s.kg, unit))}×${s.reps}`;
-  return s.warmup ? `W${core}` : core;
+  if (s.warmup) return `W${core}`;
+  return s.hard ? `🔥${core}` : core;
 }
 
 /* 세트를 "무게(파랑)×횟수" HTML로 — withUnit이면 무게에 단위를 붙임 (숫자만 들어가므로 안전) */
 function setHTML(s, unit, withUnit) {
   const w = s.kg === 0 ? '맨몸' : fmtNum(toDisplay(s.kg, unit)) + (withUnit ? unit : '');
-  return `${s.warmup ? '<span class="wu">W</span>' : ''}<span class="w">${w}</span>×${s.reps}`;
+  const mark = s.warmup ? '<span class="wu">W</span>' : (s.hard ? '🔥' : '');
+  return `${mark}<span class="w">${w}</span>×${s.reps}`;
 }
 
 /* 볼륨(무게×횟수 합)·본세트 수 — 워밍업 제외 */
 function volumeKg(sets) { return sets.reduce((a, s) => a + (s.warmup ? 0 : s.kg * s.reps), 0); }
 function workCount(sets) { return sets.filter(s => !s.warmup).length; }
+function hardCount(sets) { return sets.filter(s => s.hard && !s.warmup).length; }
 function fmtVolume(kg) { return Math.round(kg).toLocaleString('ko-KR'); }
+
+/* ===== 휴식 타이머 ===== */
+function timerStale(t) { return Date.now() - t.startTs > REST_STALE_MS; }
+
+function renderPill() {
+  const pill = document.getElementById('restPill');
+  let t = db.ui.timer;
+  if (t && t.endedSec === null && timerStale(t)) {
+    db.ui.timer = null;
+    save();
+    t = null;
+  }
+  if (!db.ui.autoTimer || !t) {
+    pill.hidden = true;
+    document.body.classList.remove('pill-on');
+    return;
+  }
+  pill.hidden = false;
+  document.body.classList.add('pill-on');
+  const timeEl = document.getElementById('restTime');
+  const endBtn = document.getElementById('restEndBtn');
+  if (t.endedSec !== null) {
+    timeEl.textContent = `⏱ 휴식 ${fmtRest(t.endedSec)} ✓`;
+    endBtn.hidden = true;
+    pill.classList.add('done');
+  } else {
+    timeEl.textContent = `⏱ ${fmtRest(Math.floor((Date.now() - t.startTs) / 1000))}`;
+    endBtn.hidden = false;
+    pill.classList.remove('done');
+  }
+}
 
 /* ===== 렌더링 ===== */
 function render() {
@@ -279,10 +319,13 @@ function renderDayView(main) {
   const stat1 = el('div', 'day-stat');
   stat1.appendChild(el('div', 'v', `${workCount(daySets)}세트`));
   stat1.appendChild(el('div', 'k', '총 본세트'));
+  const statH = el('div', 'day-stat');
+  statH.appendChild(el('div', 'v', `${hardCount(daySets)}세트`));
+  statH.appendChild(el('div', 'k', '🔥 하드세트'));
   const stat2 = el('div', 'day-stat');
   stat2.appendChild(el('div', 'v', `${fmtVolume(volumeKg(daySets))} kg`));
-  stat2.appendChild(el('div', 'k', '총 볼륨 (무게×횟수)'));
-  sumRow.append(stat1, stat2);
+  stat2.appendChild(el('div', 'k', '총 볼륨'));
+  sumRow.append(stat1, statH, stat2);
   summary.appendChild(sumRow);
   main.appendChild(summary);
 
@@ -303,6 +346,8 @@ function renderDayView(main) {
     head.appendChild(el('span', null, part));
     const stats = el('span', 'day-part-stats');
     stats.appendChild(el('span', 'badge count', `${workCount(partSets)}세트`));
+    const phc = hardCount(partSets);
+    if (phc) stats.appendChild(el('span', 'badge hardb', `🔥${phc}`));
     stats.appendChild(el('span', null, `${fmtVolume(volumeKg(partSets))} kg`));
     head.appendChild(stats);
     card.appendChild(head);
@@ -318,6 +363,8 @@ function renderDayView(main) {
       const box = el('div', 'day-ex');
       const nameRow = el('div', 'day-ex-name');
       nameRow.appendChild(el('span', null, fullName(ex)));
+      const ehc = hardCount(sets);
+      if (ehc) nameRow.appendChild(el('span', 'badge hardb', `🔥${ehc}`));
       nameRow.appendChild(el('span', 'badge count', `${workCount(sets)}세트`));
       box.appendChild(nameRow);
       const setsDiv = el('div', 'day-ex-sets');
@@ -376,8 +423,9 @@ function renderStatsView(main) {
   main.appendChild(nav);
 
   const sumCard = el('article', 'card');
-  const row = el('div', 'day-summary');
+  const row = el('div', 'day-summary grid4');
   row.appendChild(statBlock(`${workCount(cur)}세트`, '본세트', deltaChip(workCount(cur), workCount(prv), '전주')));
+  row.appendChild(statBlock(`${hardCount(cur)}세트`, '🔥 하드세트', deltaChip(hardCount(cur), hardCount(prv), '전주')));
   row.appendChild(statBlock(`${fmtVolume(volumeKg(cur))} kg`, '볼륨', deltaChip(volumeKg(cur), volumeKg(prv), '전주')));
   row.appendChild(statBlock(`${new Set(cur.map(s => s.date)).size}일`, '운동일수', null));
   sumCard.appendChild(row);
@@ -394,6 +442,8 @@ function renderStatsView(main) {
     const r = el('div', 'stat-row');
     r.appendChild(el('span', 'stat-part', part));
     r.appendChild(el('span', 'badge count', `${workCount(ps)}세트`));
+    const hc = hardCount(ps);
+    if (hc) r.appendChild(el('span', 'badge hardb', `🔥${hc}`));
     r.appendChild(el('span', 'stat-vol', `${fmtVolume(volumeKg(ps))} kg`));
     r.appendChild(deltaChip(volumeKg(ps), volumeKg(pp), ''));
     partCard.appendChild(r);
@@ -412,6 +462,8 @@ function renderStatsView(main) {
 
   const csa = workCount(mCur) / wCur;
   const psa = workCount(mPrv) / wPrv;
+  const cha = hardCount(mCur) / wCur;
+  const pha = hardCount(mPrv) / wPrv;
   const cva = volumeKg(mCur) / wCur;
   const pva = volumeKg(mPrv) / wPrv;
 
@@ -427,9 +479,10 @@ function renderStatsView(main) {
     return r;
   };
   mCard.appendChild(mkRow('세트/주', `${fmtNum(csa)}세트`, `${fmtNum(psa)}세트`, deltaChip(csa, psa, '')));
+  mCard.appendChild(mkRow('하드/주', `${fmtNum(cha)}세트`, `${fmtNum(pha)}세트`, deltaChip(cha, pha, '')));
   mCard.appendChild(mkRow('볼륨/주', `${fmtVolume(cva)} kg`, `${fmtVolume(pva)} kg`, deltaChip(cva, pva, '')));
   mCard.appendChild(el('div', 'stat-note',
-    `${m + 1}월 합계 ${workCount(mCur)}세트 · ${fmtVolume(volumeKg(mCur))} kg · 운동 ${new Set(mCur.map(s => s.date)).size}일 (${now.getDate()}일 경과 기준)`));
+    `${m + 1}월 합계 ${workCount(mCur)}세트(🔥${hardCount(mCur)}) · ${fmtVolume(volumeKg(mCur))} kg · 운동 ${new Set(mCur.map(s => s.date)).size}일 (${now.getDate()}일 경과 기준)`));
   main.appendChild(mCard);
 }
 
@@ -523,17 +576,33 @@ function loggerPanel(ex) {
   inputRow.append(wGroup, rGroup);
   panel.appendChild(inputRow);
 
-  // 워밍업 토글 + 세트 기록 버튼
+  // 워밍업·하드 토글 + 세트 기록 버튼
   const actionRow = el('div', 'action-row');
   let warmupOn = false;
+  let hardOn = false;
   const warmBtn = el('button', 'warm-toggle', 'W 워밍업');
-  warmBtn.onclick = () => { warmupOn = !warmupOn; warmBtn.classList.toggle('on', warmupOn); };
+  const hardBtn = el('button', 'hard-toggle', '🔥 하드');
+  warmBtn.onclick = () => {
+    warmupOn = !warmupOn;
+    if (warmupOn) { hardOn = false; hardBtn.classList.remove('on'); }
+    warmBtn.classList.toggle('on', warmupOn);
+  };
+  hardBtn.onclick = () => {
+    hardOn = !hardOn;
+    if (hardOn) { warmupOn = false; warmBtn.classList.remove('on'); }
+    hardBtn.classList.toggle('on', hardOn);
+  };
   const logBtn = el('button', 'log-btn', '✓ 세트 기록');
   logBtn.onclick = () => {
     const w = parseFloat(wInput.value);
     const reps = parseInt(rInput.value, 10);
     if (!Number.isFinite(w) || w < 0) { alert('무게를 확인해주세요.'); return; }
     if (!Number.isInteger(reps) || reps < 1) { alert('횟수를 확인해주세요.'); return; }
+    // "휴식 종료"를 눌러둔 경우에만 이 세트의 휴식시간으로 기록 (오늘 날짜 실시간 기록일 때만)
+    const isToday = state.date === todayStr();
+    const t = db.ui.timer;
+    let restSec = null;
+    if (isToday && db.ui.autoTimer && t && t.endedSec !== null && !timerStale(t)) restSec = t.endedSec;
     db.sets.push({
       id: uid(),
       exId: ex.id,
@@ -541,12 +610,16 @@ function loggerPanel(ex) {
       kg: round3(toKg(w, ex.unit)),
       reps,
       warmup: warmupOn,
+      hard: hardOn,
+      restSec,
       ts: Date.now(),
     });
+    db.ui.timer = (isToday && db.ui.autoTimer) ? { startTs: Date.now(), endedSec: null } : null;
     save();
     render();
+    renderPill();
   };
-  actionRow.append(warmBtn, logBtn);
+  actionRow.append(warmBtn, hardBtn, logBtn);
   panel.appendChild(actionRow);
 
   // 오늘(선택 날짜) 세트 목록
@@ -561,8 +634,15 @@ function loggerPanel(ex) {
       const label = s.kg === 0
         ? `맨몸 × ${s.reps}회`
         : `${fmtNum(toDisplay(s.kg, ex.unit))} ${ex.unit} × ${s.reps}회`;
-      row.appendChild(el('span', 'set-label', label));
+      const labelBtn = el('button', 'set-label', label);
+      if (!s.warmup) {
+        // 기록한 뒤에도 세트를 탭하면 하드 표시 켜고 끄기
+        labelBtn.onclick = () => { s.hard = !s.hard; save(); render(); };
+      }
+      row.appendChild(labelBtn);
       if (s.warmup) row.appendChild(el('span', 'badge warm', 'W'));
+      if (s.hard) row.appendChild(el('span', 'badge hardb', '🔥'));
+      if (s.restSec != null) row.appendChild(el('span', 'set-rest', `⏱${fmtRest(s.restSec)}`));
       const del = el('button', 'set-del', '✕');
       del.setAttribute('aria-label', '세트 삭제');
       del.onclick = () => {
@@ -600,8 +680,8 @@ function loggerPanel(ex) {
 }
 
 /* ===== 엑셀 내보내기 ===== */
-const LOG_HEADER = ['날짜', '요일', '부위', '운동', '구분', '단위', '무게(입력단위)', '무게(kg)', '횟수', '워밍업', '볼륨(kg)'];
-const LOG_COLS = [{ wch: 11 }, { wch: 5 }, { wch: 6 }, { wch: 22 }, { wch: 12 }, { wch: 5 }, { wch: 13 }, { wch: 9 }, { wch: 6 }, { wch: 7 }, { wch: 10 }];
+const LOG_HEADER = ['날짜', '요일', '부위', '운동', '구분', '단위', '무게(입력단위)', '무게(kg)', '횟수', '워밍업', '하드', '휴식(초)', '볼륨(kg)'];
+const LOG_COLS = [{ wch: 11 }, { wch: 5 }, { wch: 6 }, { wch: 22 }, { wch: 12 }, { wch: 5 }, { wch: 13 }, { wch: 9 }, { wch: 6 }, { wch: 7 }, { wch: 6 }, { wch: 9 }, { wch: 10 }];
 
 function logRow(s) {
   const ex = exById(s.exId);
@@ -609,7 +689,8 @@ function logRow(s) {
   return [
     s.date, DAY_NAMES[d.getDay()], ex.bodyPart, ex.baseName, ex.variant || '', ex.unit,
     round1(toDisplay(s.kg, ex.unit)), round1(s.kg), s.reps,
-    s.warmup ? 'W' : '', s.warmup ? 0 : Math.round(s.kg * s.reps * 10) / 10,
+    s.warmup ? 'W' : '', s.hard ? 'H' : '', s.restSec != null ? s.restSec : '',
+    s.warmup ? 0 : Math.round(s.kg * s.reps * 10) / 10,
   ];
 }
 
@@ -640,48 +721,51 @@ function buildWorkbook() {
   const weekLabel = w => `${w} ~ ${addDays(w, 6)}`;
   const partSetsOf = (list, part) => list.filter(s => exById(s.exId).bodyPart === part);
 
-  // ③ 주간 세트수 / ④ 주간 볼륨
+  // ③ 주간 세트수 / 주간 하드세트 / 주간 볼륨
   const header = ['주', ...BODY_PARTS, '합계'];
   const cntRows = [header];
+  const hardRows = [header];
   const volRows = [header];
   for (const w of weeks) {
     const inWk = setsInRange(w, addDays(w, 6));
     const cnts = BODY_PARTS.map(p => workCount(partSetsOf(inWk, p)));
+    const hards = BODY_PARTS.map(p => hardCount(partSetsOf(inWk, p)));
     const vols = BODY_PARTS.map(p => Math.round(volumeKg(partSetsOf(inWk, p))));
     cntRows.push([weekLabel(w), ...cnts, cnts.reduce((a, b) => a + b, 0)]);
+    hardRows.push([weekLabel(w), ...hards, hards.reduce((a, b) => a + b, 0)]);
     volRows.push([weekLabel(w), ...vols, vols.reduce((a, b) => a + b, 0)]);
   }
   const wCols = [{ wch: 24 }, ...BODY_PARTS.map(() => ({ wch: 8 })), { wch: 9 }];
-  const wsCnt = XLSX.utils.aoa_to_sheet(cntRows);
-  wsCnt['!cols'] = wCols;
-  XLSX.utils.book_append_sheet(wb, wsCnt, '주간 세트수');
-  const wsVol = XLSX.utils.aoa_to_sheet(volRows);
-  wsVol['!cols'] = wCols;
-  XLSX.utils.book_append_sheet(wb, wsVol, '주간 볼륨(kg)');
+  for (const [rows, name] of [[cntRows, '주간 세트수'], [hardRows, '주간 하드세트'], [volRows, '주간 볼륨(kg)']]) {
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = wCols;
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  }
 
   // ⑤ 평균·변화
   const avgRows = [];
   avgRows.push(['[주별 합계 · 전주 대비 변화]']);
-  avgRows.push(['주', '세트', '볼륨(kg)', '세트 변화(%)', '볼륨 변화(%)']);
-  let pc = null, pv = null;
+  avgRows.push(['주', '세트', '하드', '볼륨(kg)', '세트 변화(%)', '하드 변화(%)', '볼륨 변화(%)']);
+  let pc = null, ph = null, pv = null;
   for (const w of weeks) {
     const inWk = setsInRange(w, addDays(w, 6));
-    const c = workCount(inWk), v = Math.round(volumeKg(inWk));
+    const c = workCount(inWk), h = hardCount(inWk), v = Math.round(volumeKg(inWk));
     avgRows.push([
-      weekLabel(w), c, v,
+      weekLabel(w), c, h, v,
       pc > 0 ? Math.round(((c - pc) / pc) * 100) : '',
+      ph > 0 ? Math.round(((h - ph) / ph) * 100) : '',
       pv > 0 ? Math.round(((v - pv) / pv) * 100) : '',
     ]);
-    pc = c; pv = v;
+    pc = c; ph = h; pv = v;
   }
 
   avgRows.push([]);
   avgRows.push(['[월별 요약 · 주당 평균과 전달 대비 변화]']);
-  avgRows.push(['월', '세트', '볼륨(kg)', '운동일수', '세트/주', '볼륨/주(kg)', '세트/주 변화(%)', '볼륨/주 변화(%)']);
+  avgRows.push(['월', '세트', '하드', '볼륨(kg)', '운동일수', '세트/주', '하드/주', '볼륨/주(kg)', '세트/주 변화(%)', '하드/주 변화(%)', '볼륨/주 변화(%)']);
   const now = new Date();
   const cy = now.getFullYear(), cm = now.getMonth() + 1;
   let my = +sets[0].date.slice(0, 4), mm = +sets[0].date.slice(5, 7);
-  let psa = null, pva = null;
+  let psa = null, pha = null, pva = null;
   while (my < cy || (my === cy && mm <= cm)) {
     const mmStr = String(mm).padStart(2, '0');
     const lastDay = new Date(my, mm, 0).getDate();
@@ -690,18 +774,19 @@ function buildWorkbook() {
     const to = isCur ? todayStr() : `${my}-${mmStr}-${String(lastDay).padStart(2, '0')}`;
     const inM = setsInRange(from, to);
     const wkCount = (isCur ? now.getDate() : lastDay) / 7;
-    const c = workCount(inM), v = Math.round(volumeKg(inM));
-    const sa = round1(c / wkCount), va = Math.round(v / wkCount);
+    const c = workCount(inM), h = hardCount(inM), v = Math.round(volumeKg(inM));
+    const sa = round1(c / wkCount), ha = round1(h / wkCount), va = Math.round(v / wkCount);
     avgRows.push([
-      `${my}-${mmStr}`, c, v, new Set(inM.map(s => s.date)).size, sa, va,
+      `${my}-${mmStr}`, c, h, v, new Set(inM.map(s => s.date)).size, sa, ha, va,
       psa > 0 ? Math.round(((sa - psa) / psa) * 100) : '',
+      pha > 0 ? Math.round(((ha - pha) / pha) * 100) : '',
       pva > 0 ? Math.round(((va - pva) / pva) * 100) : '',
     ]);
-    psa = sa; pva = va;
+    psa = sa; pha = ha; pva = va;
     mm++; if (mm === 13) { mm = 1; my++; }
   }
   const wsAvg = XLSX.utils.aoa_to_sheet(avgRows);
-  wsAvg['!cols'] = [{ wch: 24 }, { wch: 7 }, { wch: 10 }, { wch: 9 }, { wch: 8 }, { wch: 11 }, { wch: 14 }, { wch: 14 }];
+  wsAvg['!cols'] = [{ wch: 24 }, { wch: 7 }, { wch: 7 }, { wch: 10 }, { wch: 9 }, { wch: 8 }, { wch: 8 }, { wch: 11 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
   XLSX.utils.book_append_sheet(wb, wsAvg, '평균·변화');
 
   return wb;
@@ -804,6 +889,23 @@ function init() {
     b.onclick = () => setDlgUnit(b.dataset.unit);
   });
 
+  // 휴식 타이머
+  document.getElementById('restEndBtn').onclick = () => {
+    const t = db.ui.timer;
+    if (t && t.endedSec === null && !timerStale(t)) {
+      t.endedSec = Math.max(1, Math.round((Date.now() - t.startTs) / 1000));
+      save();
+    }
+    renderPill();
+  };
+  document.getElementById('restCloseBtn').onclick = () => {
+    db.ui.timer = null;
+    save();
+    renderPill();
+  };
+  setInterval(renderPill, 1000);
+  renderPill();
+
   // 설정
   const settingsDialog = document.getElementById('settingsDialog');
   document.getElementById('settingsBtn').onclick = () => settingsDialog.showModal();
@@ -844,6 +946,20 @@ function init() {
     reader.readAsText(file);
     restoreFile.value = '';
   };
+
+  const timerBtn = document.getElementById('timerToggleBtn');
+  const refreshTimerBtn = () => {
+    timerBtn.textContent = `⏱ 휴식 타이머 자동 시작: ${db.ui.autoTimer ? '켜짐' : '꺼짐'}`;
+    timerBtn.classList.toggle('off', !db.ui.autoTimer);
+  };
+  timerBtn.onclick = () => {
+    db.ui.autoTimer = !db.ui.autoTimer;
+    if (!db.ui.autoTimer) db.ui.timer = null;
+    save();
+    refreshTimerBtn();
+    renderPill();
+  };
+  refreshTimerBtn();
 
   document.getElementById('wipeBtn').onclick = () => {
     if (!confirm('모든 종목과 기록이 삭제되고 기본 상태로 돌아갑니다. 계속할까요?')) return;

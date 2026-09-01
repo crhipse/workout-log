@@ -127,6 +127,7 @@ body {
 .badge.unit { background: rgba(232, 179, 75, .13); color: var(--warm); }
 .badge.count { background: rgba(61, 220, 132, .14); color: var(--ok); }
 .badge.warm { background: rgba(232, 179, 75, .13); color: var(--warm); padding: 1px 7px; }
+.badge.hardb { background: rgba(255, 122, 69, .14); color: #ff7a45; padding: 1px 7px; }
 .chev { color: var(--muted); font-size: 13px; flex: 0 0 auto; }
 
 /* ===== 입력 패널 ===== */
@@ -193,18 +194,19 @@ body {
   outline: none;
 }
 
-.action-row { display: flex; gap: 10px; }
-.warm-toggle {
+.action-row { display: flex; gap: 8px; }
+.warm-toggle, .hard-toggle {
   flex: 0 0 auto;
-  padding: 0 14px;
+  padding: 0 11px;
   height: 52px;
   border-radius: 12px;
   border: 1px solid var(--border);
   color: var(--muted);
   font-weight: 700;
-  font-size: 14px;
+  font-size: 13px;
 }
 .warm-toggle.on { border-color: var(--warm); color: var(--warm); background: rgba(232, 179, 75, .1); }
+.hard-toggle.on { border-color: #ff7a45; color: #ff7a45; background: rgba(255, 122, 69, .1); }
 .log-btn {
   flex: 1;
   height: 52px;
@@ -238,7 +240,8 @@ body {
   align-items: center;
   justify-content: center;
 }
-.set-label { flex: 1; font-weight: 600; }
+.set-label { flex: 1; min-width: 0; font-weight: 600; text-align: left; padding: 0; }
+.set-rest { color: var(--muted); font-size: 12px; }
 .set-del { color: var(--muted); font-size: 14px; padding: 6px 10px; }
 
 .manage-row { display: flex; justify-content: flex-end; gap: 4px; }
@@ -306,12 +309,13 @@ body {
 .day-ex { padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .day-ex:last-child { border-bottom: none; }
 .day-ex-name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
-.day-ex-name .badge { margin-left: auto; }
+.day-ex-name > span:first-child { flex: 1; min-width: 0; }
 .day-ex-sets { font-size: 15px; color: var(--muted); margin-top: 3px; }
 .day-ex-sets .w, .hist-sets .w { color: var(--accent); font-weight: 700; }
 .day-ex-sets .wu, .hist-sets .wu { color: var(--warm); font-weight: 700; font-size: 12px; }
 
 /* ===== 통계 뷰 ===== */
+.day-summary.grid4 { display: grid; grid-template-columns: 1fr 1fr; row-gap: 18px; }
 .day-stat-delta { margin-top: 5px; }
 .delta {
   font-size: 12px;
@@ -344,6 +348,38 @@ body {
   border-top: 1px solid var(--border);
 }
 .day-part-head + .stat-note { border-top: none; }
+
+/* ===== 휴식 타이머 알약 ===== */
+.rest-pill {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 62px;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card2);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 8px 8px 16px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .5);
+  white-space: nowrap;
+}
+.rest-pill.done { border-color: var(--ok); }
+#restTime { font-weight: 800; font-size: 15px; font-variant-numeric: tabular-nums; }
+#restEndBtn {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-weight: 700;
+  font-size: 13px;
+}
+#restCloseBtn { color: var(--muted); padding: 6px 8px; }
+body.pill-on .fab { bottom: 132px; }
+
+.settings-list #timerToggleBtn.off { color: var(--muted); }
 
 /* ===== FAB ===== */
 .fab {
