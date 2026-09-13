@@ -122,6 +122,7 @@ function renderLifeSyncStatus(status) {
   };
   let message = status.error ? errors[status.error] : status.pairing ? '기기 연결 확인 중' : !status.connected ? '연결 안 됨'
     : status.pending ? '운동 기록 전송 대기' : '자동 연동 연결됨';
+  if (status.error === 'bad_data' && status.validationPath) message += ` · 확인 항목: ${status.validationPath}`;
   if (status.lastSyncAt) message += ` · 마지막 전송 ${new Date(status.lastSyncAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
   if (status.needsReview) message += ' · 생활연대기에서 겹친 기록을 확인해 주세요.';
   text.textContent = message || '연결 상태 확인 중';
@@ -149,7 +150,7 @@ async function initLifeSync() {
       finally { input.value = ''; button.disabled = false; }
     };
     document.querySelector('#lifeSyncForm button[type=submit]').disabled = false;
-    document.getElementById('lifeSyncRetry').onclick = resume;
+    document.getElementById('lifeSyncRetry').onclick = () => { void lifeSync.resume({ retryRejected: true }).catch(reportLifeSyncError); };
     document.getElementById('lifeSyncDisconnect').onclick = async () => {
       if (!confirm('이 기기의 자동 전송을 중지할까요? 운동 기록은 삭제되지 않습니다.')) return;
       try { await lifeSync.disconnect(); } catch (error) { reportLifeSyncError(error); }
@@ -1043,9 +1044,13 @@ function init() {
 
   void initLifeSync();
 
+  // A home-screen PWA has no browser reload button. Reload code only; keep the
+  // original record key, connection database, and stored outbox untouched.
+  document.getElementById('appRefreshBtn').onclick = () => location.reload();
+
   // 배포(https) 환경에서만 서비스 워커 등록 — 오프라인 지원
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 

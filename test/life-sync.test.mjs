@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkoutSync, projectWorkout, workoutBackup } from '../life-sync.mjs';
+import { WorkoutSync, projectWorkout, workoutBackup, safeValidationPath } from '../life-sync.mjs';
 
 const initial = () => ({ version: 1, token: null, deviceId: null, revision: 0, pair: null, pending: null,
   desired: null, ackDigest: null, lastSyncAt: null, needsReview: false, error: null, failures: 0 });
@@ -47,6 +47,95 @@ test('backup and restore allowlist retains original fields, excludes nested/top-
   assert(!JSON.stringify(result).includes('secret')); assert.equal(result.exercises[0].memo, 'private-note');
   assert.equal(result.ui.timer.startTs, 100); assert.equal(result.sets.length, 1);
   assert.equal(source.connection.token, 'secret'); // The source object is never mutated.
+});
+
+test('legacy sets use unchecked optional flags in the projection without changing source records or backups', () => {
+  const source = sample();
+  source.sets = [
+    { id: 'old1', exId: 'ex1', date: '2026-08-01', kg: 20, reps: 8 },
+    { id: 'old2', exId: 'ex1', date: '2026-08-02', kg: 25, reps: 6, hard: null, warmup: null, restSec: null, ts: null },
+    { ...sample().sets[0], id: 'new' },
+  ];
+  const before = structuredClone(source), backup = workoutBackup(source);
+  const projection = projectWorkout(source);
+  for (const id of ['old1', 'old2']) {
+    const set = projection.sets.find(row => row.id === id);
+    assert.equal(set.hard, false); assert.equal(set.warmup, false);
+    assert.equal(set.restSec, null); assert.equal(set.ts, null);
+    assert.equal(set.kg, source.sets.find(row => row.id === id).kg);
+  }
+  assert.equal(projection.sets.find(row => row.id === 'new').hard, true);
+  assert.deepEqual(source, before); assert.deepEqual(workoutBackup(source), backup);
+  assert.equal(Object.hasOwn(backup.sets[0], 'hard'), false);
+  assert.equal(backup.sets[1].hard, null);
+});
+
+test('explicit invalid flag and numeric values are not silently guessed or changed', () => {
+  const source = sample(); source.sets[0].hard = 'false'; source.sets[0].warmup = 1;
+  source.sets[0].kg = '20'; source.sets[0].reps = null;
+  const set = projectWorkout(source).sets[0];
+  assert.equal(set.hard, 'false'); assert.equal(set.warmup, 1);
+  assert.equal(set.kg, '20'); assert.equal(set.reps, null);
+});
+
+test('validation diagnostics accept only bounded workout field paths, never arbitrary server text or source values', () => {
+  for (const value of ['sets[0].hard', 'sets[99999].restSec', 'exercises[23].bodyPart', 'version', 'sets']) assert.equal(safeValidationPath(value), value);
+  for (const value of [null, {}, 'secret-value', 'sets[0].hard: private-note', 'sets[0].token', 'sets[100000].hard', 'exercises[10000].id', 'x'.repeat(161), 'sets[0].hard\n']) assert.equal(safeValidationPath(value), null);
+});
+
+test('invalid data retains safe diagnostics, explicit send retries once, and automatic unchanged retries remain blocked', async () => {
+  const fixture = setup({ handler: call => call.url.endsWith('/snapshot')
+    ? response(400, { code: 'invalid_source_data', validationPath: 'sets[0].hard', error: 'private-server-text' }) : undefined });
+  await fixture.client.connect('code');
+  let status = await fixture.client.status();
+  assert.equal(status.error, 'bad_data'); assert.equal(status.validationPath, 'sets[0].hard');
+  assert(!JSON.stringify(status).includes('private-server-text'));
+  const count = fixture.calls.length; await fixture.client.resume(); assert.equal(fixture.calls.length, count);
+  await fixture.client.resume({ retryRejected: true });
+  assert.equal(fixture.calls.length, count + 1); assert.equal(fixture.timers.size, 0);
+  const sent = fixture.calls.filter(call => call.url.endsWith('/snapshot'));
+  assert.equal(sent[0].options.body, sent[1].options.body);
+  await fixture.client.resume(); assert.equal(fixture.calls.length, count + 1);
+});
+
+test('unsafe validation details are never persisted or exposed and later successful edits clear diagnostics', async () => {
+  let invalid = true;
+  const fixture = setup({ handler: call => call.url.endsWith('/snapshot') && invalid
+    ? response(400, { validationPath: 'sets[0].hard: private-note' }) : undefined });
+  await fixture.client.connect('code');
+  assert.equal((await fixture.client.status()).validationPath, null);
+  assert(!JSON.stringify(await fixture.storage.read()).includes('sets[0].hard: private-note'));
+  invalid = false; fixture.source().sets[0].reps = 15;
+  await fixture.client.changed(); await fixture.client.flush();
+  assert.equal((await fixture.client.status()).validationPath, null);
+  assert.equal((await fixture.client.status()).error, null);
+});
+
+test('startup repairs a legacy rejected snapshot and sends the full history with a fresh revision without source edits', async () => {
+  const source = sample();
+  source.sets.unshift({ id: 'old', exId: 'ex1', date: '2026-08-01', kg: 20, reps: 8 });
+  const before = structuredClone(source);
+  // This is the durable outbox produced by the previous app version: new valid
+  // records could not unblock the first historical row's absent Boolean fields.
+  const legacyPayload = { version: 1, exercises: [{ id: 'ex1', bodyPart: '가슴' }], sets: structuredClone(source.sets) };
+  const legacyDigest = JSON.stringify(legacyPayload);
+  const storage = new MemoryStorage({ ...initial(), token: 'existing-token', deviceId: 'existing-device', revision: 2,
+    pending: { revision: 2, mutationId: 'existing-device:2', digest: legacyDigest, payload: legacyPayload },
+    desired: { digest: legacyDigest, payload: legacyPayload }, error: 'bad_data' });
+  const fixture = setup({ source, storage, handler: call => {
+    assert(call.url.endsWith('/snapshot')); // No new pairing code is required.
+    for (const set of call.body.payload.sets) {
+      assert.equal(typeof set.hard, 'boolean'); assert.equal(typeof set.warmup, 'boolean');
+    }
+  } });
+  await fixture.client.start();
+  assert.equal(fixture.calls.length, 1); assert.equal(fixture.calls[0].body.revision, 3);
+  assert.equal(fixture.calls[0].body.mutationId, 'existing-device:3');
+  assert.equal(fixture.calls[0].body.payload.sets.length, 2);
+  const state = await storage.read();
+  assert.equal(state.token, 'existing-token'); assert.equal(state.pending, null);
+  assert.equal(state.error, null); assert.equal(state.lastSyncAt, 100000);
+  assert.deepEqual(source, before);
 });
 
 test('lost pairing response resumes with identical code and device after process restart', async () => {

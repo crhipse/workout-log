@@ -1,14 +1,14 @@
 'use strict';
 
 /* 네트워크 우선, 실패 시 캐시 — 오프라인에서도 앱이 열리게 함 */
-const CACHE = 'workout-v2';
+const CACHE = 'workout-v3';
 const ASSETS = [
   './', './index.html', './style.css', './app.js', './life-sync.mjs',
   './xlsx.full.min.js', './manifest.json', './icon-192.png', './icon-512.png',
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS.map(url => new Request(url, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -25,7 +25,7 @@ self.addEventListener('fetch', (e) => {
   const scope = new URL(self.registration.scope);
   if (url.origin !== scope.origin || !url.pathname.startsWith(scope.pathname)) return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         if (res.ok && res.type !== 'opaque') {
           const copy = res.clone();

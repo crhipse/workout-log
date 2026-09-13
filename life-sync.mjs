@@ -7,10 +7,19 @@ const REJECTED_PAYLOAD = ['too_large', 'bad_data', 'empty_initial_snapshot'];
 const blocksSending = error => error === 'reconnect' || REJECTED_PAYLOAD.includes(error);
 const sortIds = (a, b) => String(a.id).localeCompare(String(b.id));
 
+export function safeValidationPath(value) {
+  return typeof value === 'string' && value.length <= 160 && !/\s/.test(value) && /^(?:version|exercises(?:\[\d{1,4}\](?:\.(?:id|bodyPart))?)?|sets(?:\[\d{1,5}\](?:\.(?:id|exId|date|hard|warmup|reps|kg|restSec|ts))?)?)$/.test(value) ? value : null;
+}
+
 export function projectWorkout(db) {
   return { version: 1,
     exercises: (db.exercises || []).map(row => pick(row, ['id', 'bodyPart'])).sort(sortIds),
-    sets: (db.sets || []).map(row => pick(row, SET_FIELDS)).sort(sortIds),
+    sets: (db.sets || []).map(row => ({ ...pick(row, SET_FIELDS),
+      // Earlier versions did not store these optional controls. The original UI
+      // treats a missing/null flag as unchecked; normalize only the sent copy.
+      hard: row?.hard ?? false, warmup: row?.warmup ?? false,
+      restSec: row?.restSec ?? null, ts: row?.ts ?? null,
+    })).sort(sortIds),
   };
 }
 
@@ -28,7 +37,7 @@ export async function snapshotDigest(payload) {
 }
 
 const blank = () => ({ version: 1, token: null, deviceId: null, revision: 0, pair: null,
-  pending: null, desired: null, ackDigest: null, lastSyncAt: null, needsReview: false, error: null, failures: 0 });
+  pending: null, desired: null, ackDigest: null, lastSyncAt: null, needsReview: false, error: null, validationPath: null, failures: 0 });
 
 export function createSyncStorage(indexedDB = globalThis.indexedDB) {
   let opening;
@@ -82,6 +91,7 @@ export class WorkoutSync {
     return { connected: Boolean(state.token), pairing: Boolean(state.pair),
       pending: Boolean(state.pending || (state.token && state.desired?.digest !== state.ackDigest)),
       lastSyncAt: state.lastSyncAt, needsReview: state.needsReview, error: state.error,
+      validationPath: state.error === 'bad_data' ? safeValidationPath(state.validationPath) : null,
       sending: Boolean(this.sending || this.pairing), online: this.online() };
   }
   emit(state) { this.onStatus(this.publicStatus(state)); return state; }
@@ -164,16 +174,20 @@ export class WorkoutSync {
       // Another tab can commit original localStorage while this tab hashes an older snapshot.
       if (JSON.stringify(projectWorkout(this.readSource())) !== serialized) { superseded = true; return current; }
       const rejected = REJECTED_PAYLOAD.includes(current.error) && current.pending?.digest !== digest;
-      return { ...current, desired: { payload, digest }, ...(rejected ? { pending: null, error: null } : {}) };
+      return { ...current, desired: { payload, digest }, ...(rejected ? { pending: null, error: null, validationPath: null } : {}) };
     });
     if (superseded) return this.changed();
     if (state.token && (!state.error || state.error === 'network') && state.desired?.digest !== state.ackDigest) this.schedule();
   }
-  async resume() {
+  async resume({ retryRejected = false } = {}) {
     await this.exchange();
     const state = await this.storage.read();
     if (!state.token) { this.emit(state); return; }
     await this.changed(); // Recover a source write made immediately before the previous app process closed.
+    // Automatic retries stay blocked for an unchanged invalid payload. An
+    // explicit "send now" can request fresh validation after an app/server patch.
+    if (retryRejected) await this.update(current => current.error === 'bad_data'
+      ? { ...current, error: null, validationPath: null } : current);
     return this.flush();
   }
   async flush() {
@@ -202,7 +216,7 @@ export class WorkoutSync {
       const same = current => current.deviceId === state.deviceId && current.token === state.token && current.pending?.mutationId === request.mutationId;
       if (result.ok && result.data?.ok === true && result.data.revision === request.revision) {
         await this.update(current => same(current) ? { ...current, pending: null, ackDigest: request.digest,
-          lastSyncAt: this.now(), needsReview: result.data.needsReview === true, error: null, failures: 0 } : current);
+          lastSyncAt: this.now(), needsReview: result.data.needsReview === true, error: null, validationPath: null, failures: 0 } : current);
         continue;
       }
       if (result.status === 409 && result.data?.code === 'stale_revision' && Number.isSafeInteger(result.data.revision)
@@ -215,9 +229,10 @@ export class WorkoutSync {
         : result.status === 409 && result.data?.code === 'record_conflict' ? 'network'
         : result.status === 401 || result.status === 403 || result.status === 409 ? 'reconnect'
         : result.status === 413 ? 'too_large' : result.status === 400 || result.status === 422 ? 'bad_data' : 'network';
-      const next = await this.update(current => same(current) ? { ...current, error, failures: current.failures + 1 } : current);
+      const validationPath = error === 'bad_data' ? safeValidationPath(result.data?.validationPath) : null;
+      const next = await this.update(current => same(current) ? { ...current, error, validationPath, failures: current.failures + 1 } : current);
       if (same(next) && REJECTED_PAYLOAD.includes(error) && next.desired?.digest !== request.digest) {
-        await this.update(current => same(current) ? { ...current, pending: null, error: null } : current);
+        await this.update(current => same(current) ? { ...current, pending: null, error: null, validationPath: null } : current);
         continue;
       }
       if (same(next) && error === 'network') this.schedule(Math.min(60000, 1000 * 2 ** Math.min(next.failures, 6)));
