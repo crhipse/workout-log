@@ -60,6 +60,7 @@ function el(tag, className, text) {
 
 /* ===== 저장소 ===== */
 let db;
+let lifeSync = null;
 
 function seedExercises() {
   const seed = {
@@ -96,7 +97,70 @@ function load() {
   save();
 }
 
-function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+  // Source storage succeeds first. A stopped app recovers any missing outbox entry at its next start.
+  if (lifeSync) void lifeSync.changed().catch(reportLifeSyncError);
+}
+
+function reportLifeSyncError(error) {
+  renderLifeSyncStatus({ error: error?.message === 'storage' ? 'storage' : 'unavailable' });
+}
+
+function renderLifeSyncStatus(status) {
+  const text = document.getElementById('lifeSyncStatus');
+  if (!text) return;
+  const errors = {
+    storage: '연결 저장소를 열 수 없습니다. 운동 기록은 그대로 보관됩니다.',
+    unavailable: '자동 연동을 준비하지 못했습니다. 앱을 다시 열어 주세요. 운동 기록은 그대로 보관됩니다.',
+    reconnect: '다시 연결이 필요합니다. 생활연대기에서 새 코드를 만들어 주세요.',
+    expired_code: '연결 코드가 만료되었거나 사용할 수 없습니다. 새 코드를 만들어 주세요.',
+    too_large: '전송할 수 있는 크기를 넘었습니다. 운동 기록은 보관되며 전송 대기 중입니다.',
+    bad_data: '전송할 기록을 확인해야 합니다. 운동 기록은 그대로 보관됩니다.',
+    empty_initial_snapshot: '이 앱에 운동 기록이 없습니다. 기록이 들어 있는 기존 홈 화면 운동 앱에서 연결해 주세요. 생활연대기의 기존 기록은 유지됩니다.',
+    network: '인터넷 연결을 기다리는 중입니다. 자동으로 다시 전송합니다.',
+  };
+  let message = status.error ? errors[status.error] : status.pairing ? '기기 연결 확인 중' : !status.connected ? '연결 안 됨'
+    : status.pending ? '운동 기록 전송 대기' : '자동 연동 연결됨';
+  if (status.lastSyncAt) message += ` · 마지막 전송 ${new Date(status.lastSyncAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+  if (status.needsReview) message += ' · 생활연대기에서 겹친 기록을 확인해 주세요.';
+  text.textContent = message || '연결 상태 확인 중';
+  document.getElementById('lifeSyncForm').hidden = status.connected && status.error !== 'reconnect';
+  document.getElementById('lifeSyncHelp').hidden = status.connected && status.error !== 'reconnect';
+  document.getElementById('lifeSyncRetry').hidden = !status.connected && !status.pairing;
+  document.getElementById('lifeSyncDisconnect').hidden = !status.connected && !status.pairing;
+}
+
+async function initLifeSync() {
+  try {
+    const { WorkoutSync } = await import('./life-sync.mjs');
+    lifeSync = new WorkoutSync({
+      readSource: () => JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || db,
+      onStatus: renderLifeSyncStatus,
+    });
+    const resume = () => { void lifeSync.resume().catch(reportLifeSyncError); };
+    document.getElementById('lifeSyncForm').onsubmit = async event => {
+      event.preventDefault();
+      const input = document.getElementById('lifeSyncCode');
+      const code = input.value.trim(); input.value = '';
+      const button = event.target.querySelector('button[type=submit]'); button.disabled = true;
+      try { await lifeSync.connect(code); }
+      catch (error) { if (!code) renderLifeSyncStatus({ error: 'expired_code' }); else reportLifeSyncError(error); }
+      finally { input.value = ''; button.disabled = false; }
+    };
+    document.querySelector('#lifeSyncForm button[type=submit]').disabled = false;
+    document.getElementById('lifeSyncRetry').onclick = resume;
+    document.getElementById('lifeSyncDisconnect').onclick = async () => {
+      if (!confirm('이 기기의 자동 전송을 중지할까요? 운동 기록은 삭제되지 않습니다.')) return;
+      try { await lifeSync.disconnect(); } catch (error) { reportLifeSyncError(error); }
+    };
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) resume(); });
+    window.addEventListener('storage', event => { if (event.key === STORAGE_KEY) resume(); });
+    window.addEventListener('offline', () => { void lifeSync.status().then(renderLifeSyncStatus).catch(() => {}); });
+    await lifeSync.start();
+  } catch (error) { reportLifeSyncError(error); }
+}
 
 /* ===== 상태 ===== */
 const state = {
@@ -908,13 +972,15 @@ function init() {
 
   // 설정
   const settingsDialog = document.getElementById('settingsDialog');
+  document.getElementById('lifeSyncForm').addEventListener('submit', event => event.preventDefault());
   document.getElementById('settingsBtn').onclick = () => settingsDialog.showModal();
   document.getElementById('settingsCloseBtn').onclick = () => settingsDialog.close();
 
   document.getElementById('exportBtn').onclick = () => exportExcel();
 
-  document.getElementById('backupBtn').onclick = () => {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  document.getElementById('backupBtn').onclick = async () => {
+    const { workoutBackup } = await import('./life-sync.mjs');
+    const blob = new Blob([JSON.stringify(workoutBackup(db), null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `운동기록-백업-${todayStr()}.json`;
@@ -928,13 +994,15 @@ function init() {
     const file = restoreFile.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const obj = JSON.parse(reader.result);
         if (!Array.isArray(obj.exercises) || !Array.isArray(obj.sets)) throw new Error('bad format');
         if (!confirm('백업 데이터로 교체합니다. 현재 기록을 덮어씁니다. 계속할까요?')) return;
-        db = obj;
+        const { workoutBackup } = await import('./life-sync.mjs');
+        db = workoutBackup(obj);
         db.ui = db.ui || {};
+        if (db.ui.autoTimer === undefined) db.ui.autoTimer = true;
         save();
         state.expandedId = null;
         settingsDialog.close();
@@ -962,7 +1030,7 @@ function init() {
   refreshTimerBtn();
 
   document.getElementById('wipeBtn').onclick = () => {
-    if (!confirm('모든 종목과 기록이 삭제되고 기본 상태로 돌아갑니다. 계속할까요?')) return;
+    if (!confirm('모든 종목과 기록이 삭제되고 기본 상태로 돌아갑니다. 연결된 생활연대기에도 운동 기록 삭제가 반영됩니다. 계속할까요?')) return;
     localStorage.removeItem(STORAGE_KEY);
     load();
     state.bodyPart = BODY_PARTS[0];
@@ -972,6 +1040,8 @@ function init() {
   };
 
   render();
+
+  void initLifeSync();
 
   // 배포(https) 환경에서만 서비스 워커 등록 — 오프라인 지원
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
