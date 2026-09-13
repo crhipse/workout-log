@@ -113,18 +113,18 @@ function renderLifeSyncStatus(status) {
   const errors = {
     storage: '연결 저장소를 열 수 없습니다. 운동 기록은 그대로 보관됩니다.',
     unavailable: '자동 연동을 준비하지 못했습니다. 앱을 다시 열어 주세요. 운동 기록은 그대로 보관됩니다.',
-    reconnect: '다시 연결이 필요합니다. 생활연대기에서 새 코드를 만들어 주세요.',
+    reconnect: '다시 연결이 필요합니다. 위버멘쉬에서 새 코드를 만들어 주세요.',
     expired_code: '연결 코드가 만료되었거나 사용할 수 없습니다. 새 코드를 만들어 주세요.',
     too_large: '전송할 수 있는 크기를 넘었습니다. 운동 기록은 보관되며 전송 대기 중입니다.',
     bad_data: '전송할 기록을 확인해야 합니다. 운동 기록은 그대로 보관됩니다.',
-    empty_initial_snapshot: '이 앱에 운동 기록이 없습니다. 기록이 들어 있는 기존 홈 화면 운동 앱에서 연결해 주세요. 생활연대기의 기존 기록은 유지됩니다.',
+    empty_initial_snapshot: '이 앱에 운동 기록이 없습니다. 기록이 들어 있는 기존 홈 화면 운동 앱에서 연결해 주세요. 위버멘쉬의 기존 기록은 유지됩니다.',
     network: '인터넷 연결을 기다리는 중입니다. 자동으로 다시 전송합니다.',
   };
   let message = status.error ? errors[status.error] : status.pairing ? '기기 연결 확인 중' : !status.connected ? '연결 안 됨'
     : status.pending ? '운동 기록 전송 대기' : '자동 연동 연결됨';
   if (status.error === 'bad_data' && status.validationPath) message += ` · 확인 항목: ${status.validationPath}`;
   if (status.lastSyncAt) message += ` · 마지막 전송 ${new Date(status.lastSyncAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
-  if (status.needsReview) message += ' · 생활연대기에서 겹친 기록을 확인해 주세요.';
+  if (status.needsReview) message += ' · 위버멘쉬에서 겹친 기록을 확인해 주세요.';
   text.textContent = message || '연결 상태 확인 중';
   document.getElementById('lifeSyncForm').hidden = status.connected && status.error !== 'reconnect';
   document.getElementById('lifeSyncHelp').hidden = status.connected && status.error !== 'reconnect';
@@ -1031,7 +1031,7 @@ function init() {
   refreshTimerBtn();
 
   document.getElementById('wipeBtn').onclick = () => {
-    if (!confirm('모든 종목과 기록이 삭제되고 기본 상태로 돌아갑니다. 연결된 생활연대기에도 운동 기록 삭제가 반영됩니다. 계속할까요?')) return;
+    if (!confirm('모든 종목과 기록이 삭제되고 기본 상태로 돌아갑니다. 연결된 위버멘쉬에도 운동 기록 삭제가 반영됩니다. 계속할까요?')) return;
     localStorage.removeItem(STORAGE_KEY);
     load();
     state.bodyPart = BODY_PARTS[0];
