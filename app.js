@@ -103,8 +103,10 @@ const state = {
   date: todayStr(),
   bodyPart: BODY_PARTS[0],
   expandedId: null,
-  view: 'log', // 'log' | 'day' | 'stats'
+  view: 'log', // 'log' | 'day' | 'stats' | 'chart'
   weekOffset: 0, // 통계 탭 주간 이동 (0 = 이번 주)
+  chartRange: '12w', // '12w' | '6m' | '1y' | 'all'
+  chartMetric: 'sets', // 'sets' | 'volume'
 };
 
 function shiftDate(delta) {
@@ -230,13 +232,16 @@ function render() {
   document.getElementById('navLog').classList.toggle('active', v === 'log');
   document.getElementById('navDay').classList.toggle('active', v === 'day');
   document.getElementById('navStats').classList.toggle('active', v === 'stats');
+  document.getElementById('navChart').classList.toggle('active', v === 'chart');
 
   if (v === 'log') renderTabs();
+  destroyCharts();
   const main = document.getElementById('list');
   main.innerHTML = '';
   if (v === 'log') renderLogView(main);
   else if (v === 'day') renderDayView(main);
-  else renderStatsView(main);
+  else if (v === 'stats') renderStatsView(main);
+  else renderChartView(main);
 }
 
 function renderTabs() {
@@ -484,6 +489,426 @@ function renderStatsView(main) {
   mCard.appendChild(el('div', 'stat-note',
     `${m + 1}월 합계 ${workCount(mCur)}세트(🔥${hardCount(mCur)}) · ${fmtVolume(volumeKg(mCur))} kg · 운동 ${new Set(mCur.map(s => s.date)).size}일 (${now.getDate()}일 경과 기준)`));
   main.appendChild(mCard);
+}
+
+/* ===== 차트 탭 ===== */
+/* 부위 색은 고정 순서 (검증된 다크 모드 categorical 팔레트) — 필터로 부위가 빠져도 색이 바뀌지 않음 */
+const PART_COLORS = {
+  '가슴': '#3987e5', '등': '#d95926', '하체': '#199e70', '어깨': '#c98500',
+  '이두': '#d55181', '삼두': '#008300', '복근': '#9085e9',
+};
+const CH = {
+  normal: '#3987e5', hard: '#ff7a45', avg: '#c3c2b7',
+  grid: '#2a303a', ink: '#e9ecf1', muted: '#8b93a1', surface: '#181c22',
+  bandFill: 'rgba(12, 163, 12, .14)', bandEdge: 'rgba(12, 163, 12, .55)',
+};
+const HEAT_STEPS = ['#184f95', '#256abf', '#3987e5', '#6da7ec'];
+const RANGE_OPTS = [['12w', '12주'], ['6m', '6개월'], ['1y', '1년'], ['all', '전체']];
+const TARGET_MIN = 10;
+const TARGET_MAX = 20;
+
+let chartInstances = [];
+function destroyCharts() {
+  chartInstances.forEach(c => c.destroy());
+  chartInstances = [];
+}
+
+function firstSetDate() {
+  let first = null;
+  for (const s of db.sets) if (exById(s.exId) && (!first || s.date < first)) first = s.date;
+  return first;
+}
+
+function weeksBetween(a, b) {
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / (7 * 864e5));
+}
+
+/* 기간 → 구간 목록. 6개월 이하는 주 단위(합계), 그보다 길면 월 단위(주당 평균) */
+function chartBuckets(range) {
+  const today = todayStr();
+  const thisWeek = weekStart(today);
+  const first = firstSetDate() || today;
+  let weekly = true;
+  let nWeeks = 12;
+  if (range === '6m') nWeeks = 26;
+  else if (range === '1y') weekly = false;
+  else if (range === 'all') {
+    const span = weeksBetween(weekStart(first), thisWeek) + 1;
+    if (span <= 26) nWeeks = Math.max(span, 4);
+    else weekly = false;
+  }
+
+  const out = [];
+  if (weekly) {
+    for (let i = nWeeks - 1; i >= 0; i--) {
+      const from = addDays(thisWeek, -7 * i);
+      const d = new Date(from + 'T00:00:00');
+      out.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, from, to: addDays(from, 6), div: 1 });
+    }
+    return { weekly, buckets: out };
+  }
+
+  const now = new Date();
+  let y, m;
+  if (range === '1y') { y = now.getFullYear(); m = now.getMonth() - 11; }
+  else { y = +first.slice(0, 4); m = +first.slice(5, 7) - 1; }
+  const startIdx = y * 12 + m;
+  const endIdx = now.getFullYear() * 12 + now.getMonth();
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const yy = Math.floor(idx / 12), mm = idx % 12;
+    const isCur = idx === endIdx;
+    const lastDay = new Date(yy, mm + 1, 0).getDate();
+    const label = (mm === 0 || idx === startIdx) ? `${yy % 100}년 ${mm + 1}월` : `${mm + 1}월`;
+    out.push({
+      label,
+      from: dateToStr(new Date(yy, mm, 1)),
+      to: isCur ? today : dateToStr(new Date(yy, mm, lastDay)),
+      div: (isCur ? now.getDate() : lastDay) / 7,
+    });
+  }
+  return { weekly, buckets: out };
+}
+
+function movingAvg(arr, n, digits) {
+  return arr.map((_, i) => {
+    if (i < n - 1) return null;
+    const avg = arr.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n;
+    return digits ? round1(avg) : Math.round(avg);
+  });
+}
+
+function chartCard(title, sub, height) {
+  const card = el('article', 'card chart-card');
+  const head = el('div', 'chart-head');
+  head.appendChild(el('div', 'chart-title', title));
+  card.appendChild(head);
+  if (sub) card.appendChild(el('div', 'chart-sub', sub));
+  const box = el('div', 'chart-box');
+  box.style.height = `${height}px`;
+  const canvas = document.createElement('canvas');
+  box.appendChild(canvas);
+  card.appendChild(box);
+  return { card, head, canvas };
+}
+
+function baseChartOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 250 },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        position: 'bottom',
+        labels: { boxWidth: 10, boxHeight: 10, padding: 12, color: CH.muted },
+      },
+      tooltip: {
+        backgroundColor: '#222831',
+        borderColor: CH.grid,
+        borderWidth: 1,
+        titleColor: CH.ink,
+        bodyColor: CH.ink,
+        padding: 10,
+        boxPadding: 4,
+      },
+    },
+    scales: {
+      x: { stacked: true, grid: { display: false }, ticks: { color: CH.muted, maxRotation: 0, autoSkipPadding: 8 } },
+      y: { stacked: true, beginAtZero: true, grid: { color: CH.grid }, border: { display: false }, ticks: { color: CH.muted, precision: 0 } },
+    },
+  };
+}
+
+function barStyle(color) {
+  // 쌓인 막대 사이에 2px 표면색 틈
+  return {
+    backgroundColor: color,
+    borderColor: CH.surface,
+    borderWidth: { top: 2, right: 0, bottom: 0, left: 0 },
+    borderSkipped: 'start',
+    borderRadius: 3,
+    maxBarThickness: 26,
+  };
+}
+
+function renderChartView(main) {
+  if (typeof Chart === 'undefined') {
+    main.appendChild(el('p', 'empty', '차트 라이브러리를 불러오지 못했습니다. 새로고침해주세요.'));
+    return;
+  }
+  if (!firstSetDate()) {
+    main.appendChild(el('p', 'empty', '기록이 쌓이면 차트가 표시됩니다.'));
+    return;
+  }
+
+  // 기간 선택
+  const rangeRow = el('div', 'range-row');
+  for (const [key, label] of RANGE_OPTS) {
+    const b = el('button', 'range-btn' + (state.chartRange === key ? ' active' : ''), label);
+    b.onclick = () => { state.chartRange = key; render(); };
+    rangeRow.appendChild(b);
+  }
+  main.appendChild(rangeRow);
+
+  const { weekly, buckets } = chartBuckets(state.chartRange);
+  const bSets = buckets.map(b => setsInRange(b.from, b.to));
+  const per = weekly ? '주별 합계' : '월별 주당 평균';
+  const maN = weekly ? 4 : 3;
+  const maLabel = weekly ? '4주 평균' : '3개월 평균';
+  const labels = buckets.map(b => b.label);
+
+  renderTrendChart(main, labels, buckets, bSets, per, maN, maLabel);
+  renderPartStackChart(main, labels, buckets, bSets, per);
+  renderTargetChart(main);
+  renderHeatmap(main);
+}
+
+/* ② 운동량 추이 — 세트(하드 구분) 또는 볼륨, 이동평균선 */
+function renderTrendChart(main, labels, buckets, bSets, per, maN, maLabel) {
+  const isSets = state.chartMetric === 'sets';
+  const { card, head, canvas } = chartCard('운동량 추이', `${per} · 선은 ${maLabel} (워밍업 제외)`, 230);
+  const seg = el('div', 'mini-seg');
+  for (const [key, label] of [['sets', '세트'], ['volume', '볼륨']]) {
+    const b = el('button', state.chartMetric === key ? 'active' : '', label);
+    b.onclick = () => { state.chartMetric = key; render(); };
+    seg.appendChild(b);
+  }
+  head.appendChild(seg);
+  main.appendChild(card);
+
+  const opts = baseChartOptions();
+  let datasets;
+  if (isSets) {
+    const hard = bSets.map((s, i) => round1(hardCount(s) / buckets[i].div));
+    const normal = bSets.map((s, i) => round1((workCount(s) - hardCount(s)) / buckets[i].div));
+    const total = bSets.map((s, i) => workCount(s) / buckets[i].div);
+    datasets = [
+      { type: 'line', label: maLabel, data: movingAvg(total, maN, true), stack: 'avg', order: 0,
+        borderColor: CH.avg, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, spanGaps: true },
+      { type: 'bar', label: '일반 세트', data: normal, stack: 'sets', order: 1, ...barStyle(CH.normal) },
+      { type: 'bar', label: '🔥 하드 세트', data: hard, stack: 'sets', order: 1, ...barStyle(CH.hard) },
+    ];
+    opts.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${c.parsed.y == null ? '-' : fmtNum(c.parsed.y)}세트` };
+  } else {
+    const vol = bSets.map((s, i) => Math.round(volumeKg(s) / buckets[i].div));
+    datasets = [
+      { type: 'line', label: maLabel, data: movingAvg(vol, maN, false), stack: 'avg', order: 0,
+        borderColor: CH.avg, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.3, spanGaps: true },
+      { type: 'bar', label: '볼륨 (kg)', data: vol, stack: 'vol', order: 1, ...barStyle(CH.normal) },
+    ];
+    opts.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${c.parsed.y == null ? '-' : fmtVolume(c.parsed.y)} kg` };
+    opts.scales.y.ticks.callback = v => (v >= 1000 ? `${round1(v / 1000)}t` : v);
+  }
+  chartInstances.push(new Chart(canvas, { type: 'bar', data: { labels, datasets }, options: opts }));
+}
+
+/* ③ 부위별 세트 분포 — 부위별로 쌓은 막대 */
+function renderPartStackChart(main, labels, buckets, bSets, per) {
+  const parts = BODY_PARTS.filter(p => bSets.some(s => s.some(x => !x.warmup && exById(x.exId).bodyPart === p)));
+  const { card, canvas } = chartCard('부위별 세트 분포', `${per} · 본세트 기준`, 250);
+  main.appendChild(card);
+  if (!parts.length) {
+    card.querySelector('.chart-box').replaceWith(el('div', 'stat-note', '이 기간에는 기록이 없습니다.'));
+    return;
+  }
+  const datasets = parts.map(p => ({
+    label: p,
+    data: bSets.map((s, i) => round1(workCount(s.filter(x => exById(x.exId).bodyPart === p)) / buckets[i].div)),
+    ...barStyle(PART_COLORS[p]),
+  }));
+  const opts = baseChartOptions();
+  opts.plugins.tooltip.filter = item => item.parsed.y > 0;
+  opts.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${fmtNum(c.parsed.y)}세트` };
+  chartInstances.push(new Chart(canvas, { type: 'bar', data: { labels, datasets }, options: opts }));
+}
+
+/* ④ 부위별 주간 세트 vs 권장 범위 — 최근 28일 평균 */
+function renderTargetChart(main) {
+  const today = todayStr();
+  const recent = setsInRange(addDays(today, -27), today);
+  const vals = BODY_PARTS.map(p => round1(workCount(recent.filter(s => exById(s.exId).bodyPart === p)) / 4));
+  const { card, canvas } = chartCard('부위별 주간 세트 vs 권장 범위',
+    `최근 4주(28일) 주당 평균 · 초록 띠 = 근비대 권장 ${TARGET_MIN}~${TARGET_MAX}세트`, 260);
+  main.appendChild(card);
+
+  const below = BODY_PARTS.filter((p, i) => vals[i] < TARGET_MIN);
+  const over = BODY_PARTS.filter((p, i) => vals[i] > TARGET_MAX);
+  const ok = BODY_PARTS.filter((p, i) => vals[i] >= TARGET_MIN && vals[i] <= TARGET_MAX);
+  const note = el('div', 'target-note');
+  const line = (icon, label, list) => {
+    if (!list.length) return;
+    const d = el('div');
+    d.appendChild(el('b', null, `${icon} ${label}`));
+    d.appendChild(document.createTextNode(` ${list.join(', ')}`));
+    note.appendChild(d);
+  };
+  line('✓', '적정', ok);
+  line('▼', '부족', below);
+  line('▲', '초과', over);
+  card.appendChild(note);
+
+  const bandPlugin = {
+    id: 'targetBand',
+    beforeDatasetsDraw(chart) {
+      const { ctx, chartArea: a, scales: { x } } = chart;
+      const x1 = x.getPixelForValue(TARGET_MIN);
+      const x2 = Math.min(x.getPixelForValue(TARGET_MAX), a.right);
+      ctx.save();
+      ctx.fillStyle = CH.bandFill;
+      ctx.fillRect(x1, a.top, x2 - x1, a.bottom - a.top);
+      ctx.strokeStyle = CH.bandEdge;
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      for (const px of [x1, x2]) {
+        ctx.beginPath();
+        ctx.moveTo(px, a.top);
+        ctx.lineTo(px, a.bottom);
+        ctx.stroke();
+      }
+      ctx.restore();
+    },
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      const meta = chart.getDatasetMeta(0);
+      ctx.save();
+      ctx.fillStyle = CH.ink;
+      ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
+      ctx.textBaseline = 'middle';
+      meta.data.forEach((bar, i) => ctx.fillText(fmtNum(vals[i]), bar.x + 6, bar.y));
+      ctx.restore();
+    },
+  };
+
+  const opts = baseChartOptions();
+  opts.indexAxis = 'y';
+  opts.interaction = { mode: 'nearest', axis: 'y', intersect: false };
+  opts.plugins.legend.display = false;
+  opts.plugins.tooltip.callbacks = { label: c => `주당 ${fmtNum(c.parsed.x)}세트` };
+  opts.scales = {
+    x: { beginAtZero: true, suggestedMax: Math.max(24, Math.ceil(Math.max(...vals) + 4)),
+      grid: { color: CH.grid }, border: { display: false }, ticks: { color: CH.muted, stepSize: 5 } },
+    y: { grid: { display: false }, ticks: { color: CH.ink, font: { weight: '600' } } },
+  };
+  chartInstances.push(new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: BODY_PARTS,
+      datasets: [{
+        data: vals,
+        backgroundColor: BODY_PARTS.map(p => PART_COLORS[p]),
+        borderRadius: 4,
+        borderSkipped: 'start',
+        barPercentage: 0.7,
+        maxBarThickness: 20,
+      }],
+    },
+    options: opts,
+    plugins: [bandPlugin],
+  }));
+}
+
+/* ⑤ 운동 출석 달력 — 열=주(월~일), 진하기=그날 볼륨 */
+function renderHeatmap(main) {
+  const today = todayStr();
+  const thisWeek = weekStart(today);
+  const first = firstSetDate();
+  const nWeeks = { '12w': 12, '6m': 26, '1y': 53 }[state.chartRange]
+    || Math.max(12, weeksBetween(weekStart(first), thisWeek) + 1);
+  const start = addDays(thisWeek, -7 * (nWeeks - 1));
+
+  const byDay = new Map();
+  for (const s of setsInRange(start, today)) {
+    if (!byDay.has(s.date)) byDay.set(s.date, []);
+    byDay.get(s.date).push(s);
+  }
+  let maxVol = 0;
+  for (const sets of byDay.values()) maxVol = Math.max(maxVol, volumeKg(sets));
+  const level = sets => {
+    if (!sets) return 0;
+    if (maxVol <= 0) return 1;
+    const r = volumeKg(sets) / maxVol;
+    return r >= 0.75 ? 4 : r >= 0.5 ? 3 : r >= 0.25 ? 2 : 1;
+  };
+
+  const card = el('article', 'card chart-card');
+  const head = el('div', 'chart-head');
+  head.appendChild(el('div', 'chart-title', '운동 출석 달력'));
+  card.appendChild(head);
+  card.appendChild(el('div', 'chart-sub', `운동한 날 ${byDay.size}일 · 진할수록 그날 볼륨이 큼 · 칸을 탭하면 상세`));
+
+  const wrap = el('div', 'heat-wrap');
+  const dayCol = el('div', 'heat-days');
+  ['', '월', '', '수', '', '금', '', '일'].forEach(t => dayCol.appendChild(el('span', null, t)));
+  const scroller = el('div', 'heat-scroll');
+  const grid = el('div', 'heat-grid');
+
+  const info = el('div', 'heat-info', '칸을 탭하면 그날 기록이 보입니다.');
+  let selected = null;
+
+  let prevMonth = -1;
+  for (let w = 0; w < nWeeks; w++) {
+    const ws = addDays(start, 7 * w);
+    const col = el('div', 'heat-col');
+    const mon = new Date(ws + 'T00:00:00').getMonth();
+    col.appendChild(el('span', 'heat-month', mon !== prevMonth ? `${mon + 1}월` : ''));
+    prevMonth = mon;
+    for (let d = 0; d < 7; d++) {
+      const date = addDays(ws, d);
+      const cell = el('button', 'heat-cell');
+      if (date > today) {
+        cell.classList.add('future');
+        cell.disabled = true;
+      } else {
+        const sets = byDay.get(date);
+        const lv = level(sets);
+        if (lv) cell.style.background = HEAT_STEPS[lv - 1];
+        cell.setAttribute('aria-label', date);
+        cell.onclick = () => {
+          if (selected) selected.classList.remove('sel');
+          selected = cell;
+          cell.classList.add('sel');
+          info.innerHTML = '';
+          if (!sets) {
+            info.textContent = `${fmtDateShort(date)} · 운동 안 함`;
+            return;
+          }
+          const parts = [...new Set(sets.map(s => exById(s.exId).bodyPart))];
+          info.appendChild(el('span', null,
+            `${fmtDateShort(date)} · ${parts.join('·')} · ${workCount(sets)}세트(🔥${hardCount(sets)}) · ${fmtVolume(volumeKg(sets))} kg`));
+          const go = el('button', 'heat-go', '일지 ›');
+          go.onclick = () => {
+            state.date = date;
+            document.getElementById('datePicker').value = date;
+            state.view = 'day';
+            render();
+            window.scrollTo(0, 0);
+          };
+          info.appendChild(go);
+        };
+      }
+      col.appendChild(cell);
+    }
+    grid.appendChild(col);
+  }
+  scroller.appendChild(grid);
+  wrap.append(dayCol, scroller);
+  card.appendChild(wrap);
+
+  const legend = el('div', 'heat-legend');
+  legend.appendChild(el('span', null, '적음'));
+  for (const c of ['', ...HEAT_STEPS]) {
+    const sw = el('span', 'heat-cell sw');
+    if (c) sw.style.background = c;
+    legend.appendChild(sw);
+  }
+  legend.appendChild(el('span', null, '많음'));
+  card.appendChild(legend);
+  card.appendChild(info);
+  main.appendChild(card);
+  // 주 수가 적으면 칸을 키워 폭을 채움 (13~24px), 많으면 13px 고정 + 가로 스크롤
+  const cell = Math.max(13, Math.min(24, Math.floor((scroller.clientWidth + 3) / nWeeks) - 3));
+  wrap.style.setProperty('--cell', `${cell}px`);
+  scroller.scrollLeft = scroller.scrollWidth;
 }
 
 function exerciseCard(ex, label) {
@@ -858,6 +1283,7 @@ function init() {
   document.getElementById('navLog').onclick = () => { state.view = 'log'; render(); };
   document.getElementById('navDay').onclick = () => { state.view = 'day'; render(); };
   document.getElementById('navStats').onclick = () => { state.view = 'stats'; state.weekOffset = 0; render(); };
+  document.getElementById('navChart').onclick = () => { state.view = 'chart'; render(); window.scrollTo(0, 0); };
 
   document.getElementById('addExBtn').onclick = () => openExDialog();
   document.getElementById('exCancelBtn').onclick = () => document.getElementById('exDialog').close();

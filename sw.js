@@ -1,10 +1,10 @@
 'use strict';
 
 /* 네트워크 우선, 실패 시 캐시 — 오프라인에서도 앱이 열리게 함 */
-const CACHE = 'workout-v1';
+const CACHE = 'workout-v2';
 const ASSETS = [
   './', './index.html', './style.css', './app.js',
-  './xlsx.full.min.js', './manifest.json', './icon-192.png', './icon-512.png',
+  './xlsx.full.min.js', './chart.umd.min.js', './manifest.json', './icon-192.png', './icon-512.png',
 ];
 
 self.addEventListener('install', (e) => {

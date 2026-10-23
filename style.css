@@ -265,7 +265,7 @@ body {
 .bottomnav button {
   flex: 1;
   padding: 13px 0 15px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--muted);
 }
@@ -348,6 +348,97 @@ body {
   border-top: 1px solid var(--border);
 }
 .day-part-head + .stat-note { border-top: none; }
+
+/* ===== 차트 뷰 ===== */
+.range-row { display: flex; gap: 6px; padding: 2px 0 4px; }
+.range-btn {
+  flex: 1;
+  padding: 9px 0;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+.range-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.chart-card { padding: 14px 12px 12px; }
+.chart-head { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
+.chart-title { font-size: 15px; font-weight: 800; margin-right: auto; }
+.chart-sub { font-size: 12px; color: var(--muted); padding: 3px 2px 10px; }
+.chart-box { position: relative; width: 100%; }
+.chart-card > .stat-note { border-top: none; padding: 6px 2px; }
+
+.mini-seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mini-seg button { padding: 5px 11px; font-size: 12px; font-weight: 700; color: var(--muted); background: var(--card2); }
+.mini-seg button.active { background: var(--accent); color: #fff; }
+
+.target-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 10px 2px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+.target-note b { color: var(--text); font-weight: 700; }
+
+.heat-wrap { --cell: 13px; display: flex; gap: 4px; }
+.heat-days, .heat-col { display: grid; grid-template-rows: 14px repeat(7, var(--cell)); gap: 3px; }
+.heat-days span { font-size: 10px; color: var(--muted); line-height: var(--cell); }
+.heat-scroll { overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+.heat-scroll::-webkit-scrollbar { display: none; }
+.heat-grid { display: flex; gap: 3px; width: max-content; }
+.heat-month { font-size: 10px; color: var(--muted); white-space: nowrap; width: var(--cell); overflow: visible; }
+.heat-cell {
+  width: var(--cell);
+  height: var(--cell);
+  border-radius: 3px;
+  background: var(--card2);
+  padding: 0;
+}
+.heat-cell.sw { width: 13px; height: 13px; }
+.heat-cell.future { background: transparent; }
+.heat-cell.sel { outline: 2px solid var(--text); outline-offset: 1px; }
+.heat-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 10px 2px 0;
+}
+.heat-legend span:first-child { margin-right: 3px; }
+.heat-legend span:last-child { margin-left: 3px; }
+.heat-cell.sw { display: inline-block; }
+.heat-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 10px 2px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  min-height: 36px;
+}
+.heat-info span { flex: 1; color: var(--text); }
+.heat-go {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 4px 6px;
+}
 
 /* ===== 휴식 타이머 알약 ===== */
 .rest-pill {
