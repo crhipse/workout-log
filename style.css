@@ -378,6 +378,8 @@ body {
 }
 .mini-seg button { padding: 5px 11px; font-size: 12px; font-weight: 700; color: var(--muted); background: var(--card2); }
 .mini-seg button.active { background: var(--accent); color: #fff; }
+.mini-seg.wide { margin: 0 2px 10px; }
+.mini-seg.wide button { flex: 1; padding: 7px 0; }
 
 .target-note {
   display: flex;

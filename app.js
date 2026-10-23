@@ -172,6 +172,7 @@ const state = {
   weekOffset: 0, // 통계 탭 주간 이동 (0 = 이번 주)
   chartRange: '12w', // '12w' | '6m' | '1y' | 'all'
   chartMetric: 'sets', // 'sets' | 'volume'
+  targetWeeks: 4, // 권장 범위 차트 평균 기간
 };
 
 function shiftDate(delta) {
@@ -571,6 +572,34 @@ const HEAT_STEPS = ['#184f95', '#256abf', '#3987e5', '#6da7ec'];
 const RANGE_OPTS = [['12w', '12주'], ['6m', '6개월'], ['1y', '1년'], ['all', '전체']];
 const TARGET_MIN = 10;
 const TARGET_MAX = 20;
+const TARGET_WEEK_OPTS = [4, 8, 12, 26, 52];
+
+/* 차트 안 버튼을 눌러도 화면이 위로 튀지 않게 스크롤 위치 유지 */
+function rerenderKeepScroll() {
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
+/* 탭하면 상세 표시, 같은 곳을 다시 탭하면 닫힘 */
+function tapToggleTooltip(opts) {
+  opts.events = ['click'];
+  let last = null;
+  opts.onClick = (evt, elements, chart) => {
+    const key = elements.length ? elements[0].index : null;
+    if (key === null || key === last) {
+      last = null;
+      // onClick이 툴팁 플러그인보다 먼저 실행되므로, 툴팁이 다시 켜진 뒤에 닫음
+      setTimeout(() => {
+        chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        chart.setActiveElements([]);
+        chart.update('none');
+      }, 0);
+    } else {
+      last = key;
+    }
+  };
+}
 
 let chartInstances = [];
 function destroyCharts() {
@@ -657,7 +686,7 @@ function chartCard(title, sub, height) {
 }
 
 function baseChartOptions() {
-  return {
+  const opts = {
     responsive: true,
     maintainAspectRatio: false,
     animation: { duration: 250 },
@@ -682,6 +711,8 @@ function baseChartOptions() {
       y: { stacked: true, beginAtZero: true, grid: { color: CH.grid }, border: { display: false }, ticks: { color: CH.muted, precision: 0 } },
     },
   };
+  tapToggleTooltip(opts);
+  return opts;
 }
 
 function barStyle(color) {
@@ -735,7 +766,7 @@ function renderTrendChart(main, labels, buckets, bSets, per, maN, maLabel) {
   const seg = el('div', 'mini-seg');
   for (const [key, label] of [['sets', '세트'], ['volume', '볼륨']]) {
     const b = el('button', state.chartMetric === key ? 'active' : '', label);
-    b.onclick = () => { state.chartMetric = key; render(); };
+    b.onclick = () => { state.chartMetric = key; rerenderKeepScroll(); };
     seg.appendChild(b);
   }
   head.appendChild(seg);
@@ -787,13 +818,28 @@ function renderPartStackChart(main, labels, buckets, bSets, per) {
   chartInstances.push(new Chart(canvas, { type: 'bar', data: { labels, datasets }, options: opts }));
 }
 
-/* ④ 부위별 주간 세트 vs 권장 범위 — 최근 28일 평균 */
+/* ④ 부위별 주간 세트 vs 권장 범위 — 최근 N주 주당 평균 */
 function renderTargetChart(main) {
   const today = todayStr();
-  const recent = setsInRange(addDays(today, -27), today);
-  const vals = BODY_PARTS.map(p => round1(workCount(recent.filter(s => exById(s.exId).bodyPart === p)) / 4));
+  const n = state.targetWeeks;
+  const from = addDays(today, -(n * 7 - 1));
+  // 기록을 시작한 지 N주가 안 됐으면 실제 기록 기간으로 나눠서 평균이 낮게 왜곡되지 않게 함
+  const first = firstSetDate();
+  const recordedDays = first ? Math.floor((new Date(today + 'T00:00:00') - new Date(first + 'T00:00:00')) / 864e5) + 1 : 0;
+  const div = Math.max(1, Math.min(n, recordedDays / 7));
+  const shortened = div < n;
+  const recent = setsInRange(from, today);
+  const vals = BODY_PARTS.map(p => round1(workCount(recent.filter(s => exById(s.exId).bodyPart === p)) / div));
+  const basis = shortened ? `기록 기간 ${recordedDays}일 기준` : `최근 ${n}주`;
   const { card, canvas } = chartCard('부위별 주간 세트 vs 권장 범위',
-    `최근 4주(28일) 주당 평균 · 초록 띠 = 근비대 권장 ${TARGET_MIN}~${TARGET_MAX}세트`, 260);
+    `${basis} 주당 평균 · 초록 띠 = 근비대 권장 ${TARGET_MIN}~${TARGET_MAX}세트`, 260);
+  const seg = el('div', 'mini-seg wide');
+  for (const w of TARGET_WEEK_OPTS) {
+    const b = el('button', state.targetWeeks === w ? 'active' : '', `${w}주`);
+    b.onclick = () => { state.targetWeeks = w; rerenderKeepScroll(); };
+    seg.appendChild(b);
+  }
+  card.insertBefore(seg, card.querySelector('.chart-box'));
   main.appendChild(card);
 
   const below = BODY_PARTS.filter((p, i) => vals[i] < TARGET_MIN);
@@ -930,6 +976,11 @@ function renderHeatmap(main) {
         cell.setAttribute('aria-label', date);
         cell.onclick = () => {
           if (selected) selected.classList.remove('sel');
+          if (selected === cell) {
+            selected = null;
+            info.textContent = '칸을 탭하면 그날 기록이 보입니다.';
+            return;
+          }
           selected = cell;
           cell.classList.add('sel');
           info.innerHTML = '';
